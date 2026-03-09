@@ -1,0 +1,16 @@
+[Unit]
+Description=Kalman Robotics - Robot Agent (%i)
+After=network-online.target husarnet.service
+Wants=network-online.target
+
+[Service]
+User=root
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/kalman/robot-%i.env
+ExecStart=/usr/bin/python3 /usr/local/bin/kalman-agent-robot.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
