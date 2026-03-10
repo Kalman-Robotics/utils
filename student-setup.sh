@@ -158,6 +158,8 @@ function install_husarnet() {
             sudo apt-get purge -y husarnet 2>/dev/null || true
             sudo apt-get autoremove -y 2>/dev/null || true
 
+            log_info "Actualizando índice de paquetes..."
+            sudo apt-get update -qq
             log_info "Instalando versión nightly..."
             if curl -s https://nightly.husarnet.com/install.sh | sudo bash -; then
                 log_ok "Husarnet actualizado a nightly."
@@ -167,6 +169,8 @@ function install_husarnet() {
             fi
         fi
     else
+        log_info "Actualizando índice de paquetes..."
+        sudo apt-get update -qq
         log_info "Instalando Husarnet..."
         curl -s https://nightly.husarnet.com/install.sh | sudo bash -
         if ! husarnet version &>/dev/null; then
