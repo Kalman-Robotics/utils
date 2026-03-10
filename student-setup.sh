@@ -90,7 +90,7 @@ function enable_systemd_wsl() {
     if [ "${ENVIRONMENT}" != "WSL" ]; then return; fi
 
     log_info "Verificando systemd en WSL2..."
-    if [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
+    if [ "$(cat /proc/1/comm 2>/dev/null)" = "systemd" ]; then
         log_ok "systemd ya está habilitado en WSL2."
     else
         log_info "Habilitando systemd en WSL2..."
