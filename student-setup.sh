@@ -92,18 +92,27 @@ function enable_systemd_wsl() {
     log_info "Verificando systemd en WSL2..."
     if [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
         log_ok "systemd ya está habilitado en WSL2."
-        return
+    else
+        log_info "Habilitando systemd en WSL2..."
+        if ! grep -q "systemd=true" /etc/wsl.conf 2>/dev/null; then
+            echo -e "[boot]\nsystemd=true" | sudo tee /etc/wsl.conf > /dev/null
+        fi
+
+        log_warn "systemd fue habilitado. Es necesario reiniciar WSL2."
+        log_warn "Ejecuta en PowerShell: wsl --shutdown"
+        log_warn "Luego vuelve a ejecutar este comando."
+        exit 0
     fi
 
-    log_info "Habilitando systemd en WSL2..."
-    if ! grep -q "systemd=true" /etc/wsl.conf 2>/dev/null; then
-        echo -e "[boot]\nsystemd=true" | sudo tee /etc/wsl.conf > /dev/null
+    # Corregir problema de DNS en WSL2
+    log_info "Configurando hostname en /etc/hosts..."
+    local current_hostname=$(hostname)
+    if ! grep -q "127.0.0.1.*${current_hostname}" /etc/hosts; then
+        echo "127.0.0.1 ${current_hostname}" | sudo tee -a /etc/hosts > /dev/null
+        log_ok "Hostname agregado a /etc/hosts"
+    else
+        log_ok "Hostname ya configurado en /etc/hosts"
     fi
-
-    log_warn "systemd fue habilitado. Es necesario reiniciar WSL2."
-    log_warn "Ejecuta en PowerShell: wsl --shutdown"
-    log_warn "Luego vuelve a ejecutar este comando."
-    exit 0
 }
 
 # ─────────────────────────────────────────────
@@ -131,7 +140,31 @@ function install_dependencies() {
 function install_husarnet() {
     log_info "Verificando Husarnet..."
     if husarnet version &>/dev/null; then
-        log_ok "Husarnet ya instalado: $(husarnet version | head -1)"
+        local current_version=$(husarnet version | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
+        log_ok "Husarnet ya instalado: versión ${current_version}"
+
+        # Si la versión instalada es 2.0.180, actualizar a nightly
+        if [ "${current_version}" = "2.0.180" ]; then
+            log_warn "Versión 2.0.180 detectada. Actualizando a nightly..."
+
+            # Detener el servicio antes de desinstalar
+            log_info "Deteniendo servicio Husarnet..."
+            sudo systemctl stop husarnet 2>/dev/null || true
+            sudo systemctl disable husarnet 2>/dev/null || true
+
+            log_info "Desinstalando versión anterior..."
+            sudo apt-get remove -y husarnet 2>/dev/null || true
+            sudo apt-get purge -y husarnet 2>/dev/null || true
+            sudo apt-get autoremove -y 2>/dev/null || true
+
+            log_info "Instalando versión nightly..."
+            if curl -s https://nightly.husarnet.com/install.sh | sudo bash -; then
+                log_ok "Husarnet actualizado a nightly."
+            else
+                log_err "No se pudo actualizar Husarnet a nightly."
+                exit 1
+            fi
+        fi
     else
         log_info "Instalando Husarnet..."
         curl -s https://install.husarnet.com/nightly.sh | sudo bash
@@ -252,10 +285,32 @@ function husarnet_claim() {
     sleep 3
 
     log_info "Registrando dispositivo en la cuenta Kalman como '${KALMAN_HOSTNAME}'..."
-    timeout 60 sudo husarnet claim "${CLAIM_CODE}"
-    if [ $? -ne 0 ]; then
-        log_err "No se pudo registrar el dispositivo."
-        exit 1
+    local claim_output
+    claim_output=$(timeout 60 sudo husarnet claim ${CLAIM_CODE} 2>&1)
+    local claim_status=$?
+
+    if [ $claim_status -ne 0 ]; then
+        if echo "${claim_output}" | grep -qi "already claimed"; then
+            log_warn "Dispositivo ya estaba reclamado. Haciendo unclaim y reintentando..."
+            sudo husarnet device unclaim --yes 2>/dev/null
+            sleep 3
+            sudo systemctl restart husarnet
+            sleep 3
+
+            log_info "Reintentando claim..."
+            claim_output=$(timeout 60 sudo husarnet claim ${CLAIM_CODE} 2>&1)
+            claim_status=$?
+
+            if [ $claim_status -ne 0 ]; then
+                log_err "No se pudo registrar el dispositivo después del unclaim."
+                echo "${claim_output}"
+                exit 1
+            fi
+        else
+            log_err "No se pudo registrar el dispositivo."
+            echo "${claim_output}"
+            exit 1
+        fi
     fi
     log_ok "Dispositivo registrado en la cuenta Kalman como '${KALMAN_HOSTNAME}'."
 }

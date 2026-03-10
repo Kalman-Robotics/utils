@@ -78,7 +78,7 @@ function install_husarnet() {
         log_ok "Husarnet ya instalado: $(husarnet version | head -1)"
     else
         log_info "Instalando Husarnet nightly..."
-        curl -s https://install.husarnet.com/nightly.sh | sudo bash
+        curl -s https://nightly.husarnet.com/install.sh | sudo bash -
         if ! husarnet version &>/dev/null; then
             log_err "Husarnet no se instaló correctamente."
             exit 1
