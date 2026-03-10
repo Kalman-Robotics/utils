@@ -159,7 +159,7 @@ function install_husarnet() {
             sudo apt-get autoremove -y 2>/dev/null || true
 
             log_info "Instalando versión nightly..."
-            if curl -s https://install.husarnet.com/nightly.sh | sudo bash; then
+            if curl -s https://nightly.husarnet.com/install.sh | sudo bash -; then
                 log_ok "Husarnet actualizado a nightly."
             else
                 log_err "No se pudo actualizar Husarnet a nightly."
@@ -168,7 +168,7 @@ function install_husarnet() {
         fi
     else
         log_info "Instalando Husarnet..."
-        curl -s https://install.husarnet.com/nightly.sh | sudo bash
+        curl -s https://nightly.husarnet.com/install.sh | sudo bash -
         if ! husarnet version &>/dev/null; then
             log_err "Husarnet no se instaló correctamente."
             exit 1
@@ -293,31 +293,23 @@ function husarnet_claim() {
 
     log_info "Registrando dispositivo en la cuenta Kalman como '${KALMAN_HOSTNAME}'..."
     local claim_output
-    claim_output=$(timeout 60 sudo husarnet claim ${CLAIM_CODE} 2>&1)
-    local claim_status=$?
+    claim_output=$(timeout 60 sudo husarnet claim "${CLAIM_CODE}" 2>&1)
 
-    if [ $claim_status -ne 0 ]; then
-        if echo "${claim_output}" | grep -qi "already claimed"; then
-            log_warn "Dispositivo ya estaba reclamado. Haciendo unclaim y reintentando..."
-            sudo husarnet device unclaim --yes 2>/dev/null
-            sleep 3
-            sudo systemctl restart husarnet
-            sleep 3
+    if echo "${claim_output}" | grep -qi "already claimed"; then
+        log_warn "Dispositivo reclamado por otra cuenta. Liberando identidad..."
+        sudo systemctl stop husarnet
+        sudo rm -f /var/lib/husarnet/id /var/lib/husarnet/config.db
+        sudo systemctl start husarnet
+        sleep 5
 
-            log_info "Reintentando claim..."
-            claim_output=$(timeout 60 sudo husarnet claim ${CLAIM_CODE} 2>&1)
-            claim_status=$?
+        log_info "Reintentando claim..."
+        claim_output=$(timeout 60 sudo husarnet claim "${CLAIM_CODE}" 2>&1)
+    fi
 
-            if [ $claim_status -ne 0 ]; then
-                log_err "No se pudo registrar el dispositivo después del unclaim."
-                echo "${claim_output}"
-                exit 1
-            fi
-        else
-            log_err "No se pudo registrar el dispositivo."
-            echo "${claim_output}"
-            exit 1
-        fi
+    if ! echo "${claim_output}" | grep -qi "success"; then
+        log_err "No se pudo registrar el dispositivo."
+        echo "${claim_output}"
+        exit 1
     fi
     log_ok "Dispositivo registrado en la cuenta Kalman como '${KALMAN_HOSTNAME}'."
 }
