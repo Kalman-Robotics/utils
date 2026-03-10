@@ -143,9 +143,10 @@ function install_husarnet() {
         local current_version=$(husarnet version | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
         log_ok "Husarnet ya instalado: versión ${current_version}"
 
-        # Si la versión instalada es 2.0.180, actualizar a nightly
-        if [ "${current_version}" = "2.0.180" ]; then
-            log_warn "Versión 2.0.180 detectada. Actualizando a nightly..."
+        # Si el patch es menor a 300 (ej: 2.0.180), es versión antigua — actualizar a nightly
+        local patch=$(echo "${current_version}" | cut -d. -f3)
+        if [ "${patch}" -lt 300 ] 2>/dev/null; then
+            log_warn "Versión antigua detectada (${current_version}). Actualizando a nightly..."
 
             # Detener el servicio antes de desinstalar
             log_info "Deteniendo servicio Husarnet..."
@@ -158,7 +159,7 @@ function install_husarnet() {
             sudo apt-get autoremove -y 2>/dev/null || true
 
             log_info "Instalando versión nightly..."
-            if curl -s https://nightly.husarnet.com/install.sh | sudo bash -; then
+            if curl -s https://install.husarnet.com/nightly.sh | sudo bash; then
                 log_ok "Husarnet actualizado a nightly."
             else
                 log_err "No se pudo actualizar Husarnet a nightly."
@@ -192,6 +193,12 @@ function install_ros2() {
         ROS_DISTRO=$(ls /opt/ros/ | head -n1)
         if [ -n "${ROS_DISTRO}" ]; then
             log_ok "ROS2 ya instalado: ${ROS_DISTRO}"
+            # Verificar CycloneDDS aunque ROS2 ya esté instalado
+            if ! dpkg -l ros-humble-rmw-cyclonedds-cpp &>/dev/null; then
+                log_info "Instalando ros-humble-rmw-cyclonedds-cpp..."
+                sudo apt-get install -y ros-humble-rmw-cyclonedds-cpp
+                log_ok "CycloneDDS RMW instalado."
+            fi
             return
         fi
     fi
