@@ -285,22 +285,28 @@ function husarnet_claim() {
         return
     fi
 
+    # Guardar hostname original para restaurarlo al final de sesión
+    sudo mkdir -p "${KALMAN_DIR}"
+    if [ ! -f "${KALMAN_DIR}/original_hostname" ]; then
+        hostname | sudo tee "${KALMAN_DIR}/original_hostname" > /dev/null
+    fi
+
     # husarnet claim usa el hostname del sistema — lo fijamos antes de hacer claim
     log_info "Configurando hostname a '${KALMAN_HOSTNAME}'..."
     sudo hostnamectl set-hostname "${KALMAN_HOSTNAME}"
     sudo systemctl restart husarnet
+    sudo husarnet daemon restart
+
     sleep 3
 
     log_info "Registrando dispositivo en la cuenta Kalman como '${KALMAN_HOSTNAME}'..."
     local claim_output
     claim_output=$(timeout 60 sudo husarnet claim "${CLAIM_CODE}" 2>&1)
 
-    if echo "${claim_output}" | grep -qi "already claimed"; then
-        log_warn "Dispositivo reclamado por otra cuenta. Liberando identidad..."
-        sudo systemctl stop husarnet
-        sudo rm -f /var/lib/husarnet/id /var/lib/husarnet/config.db
-        sudo systemctl start husarnet
-        sleep 5
+    if echo "${claim_output}" | grep -qi "already claimed by someone else"; then
+        log_warn "Dispositivo pertenece a otra cuenta. Liberando..."
+        sudo husarnet device unclaim
+        sleep 3
 
         log_info "Reintentando claim..."
         claim_output=$(timeout 60 sudo husarnet claim "${CLAIM_CODE}" 2>&1)
@@ -310,6 +316,10 @@ function husarnet_claim() {
         log_err "No se pudo registrar el dispositivo."
         echo "${claim_output}"
         exit 1
+    fi
+
+    if echo "${claim_output}" | grep -qi "already claimed this device"; then
+        log_warn "Dispositivo ya estaba en esta cuenta — continuando."
     fi
     log_ok "Dispositivo registrado en la cuenta Kalman como '${KALMAN_HOSTNAME}'."
 }
@@ -355,11 +365,7 @@ function notify_fc94() {
 # ─────────────────────────────────────────────
 function configure_cyclonedds() {
     sudo mkdir -p "${KALMAN_DIR}"
-    if [ -f "${KALMAN_DIR}/cyclonedds.xml" ]; then
-        log_ok "CycloneDDS ya configurado — sin cambios."
-        return
-    fi
-    log_info "Configurando CycloneDDS (primera vez)..."
+    log_info "Configurando CycloneDDS..."
 
 cat <<EOF | sudo tee "${KALMAN_DIR}/cyclonedds.xml" > /dev/null
 <?xml version="1.0" encoding="UTF-8" ?>
@@ -406,22 +412,38 @@ function export_ros_env() {
     log_info "Configurando variables de entorno ROS2..."
 
     local ros_distro=${ROS_DISTRO:-humble}
+    sudo mkdir -p "${KALMAN_DIR}"
 
-    declare -A ros_vars=(
-        ["source /opt/ros/${ros_distro}/setup.bash"]="source /opt/ros/${ros_distro}/setup.bash"
-        ["RMW_IMPLEMENTATION"]="export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
-        ["CYCLONEDDS_URI"]="export CYCLONEDDS_URI=file://${KALMAN_DIR}/cyclonedds.xml"
-        ["ROS_DOMAIN_ID"]="export ROS_DOMAIN_ID=0"
-        ["ROS_IPV6"]="export ROS_IPV6=on"
-    )
+    cat <<EOF | sudo tee "${KALMAN_DIR}/env.bash" > /dev/null
+_K_GREEN='\033[0;32m'
+_K_YELLOW='\033[1;33m'
+_K_NC='\033[0m'
+echo ""
+echo -e "\${_K_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${_K_NC}"
+echo -e "\${_K_GREEN}  Kalman Robotics — Sesion activa\${_K_NC}"
+echo -e "\${_K_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${_K_NC}"
+echo -e "  Robot:  ${ROBOT_HOSTNAME}"
+echo -e "  AWS:    ${AWS_HOSTNAME}"
+echo ""
+echo -e "  Al terminar la sesion ejecuta:"
+echo -e "  \${_K_YELLOW}bash <(curl -sSL https://raw.githubusercontent.com/Kalman-Robotics/utils/master/student-end.sh)\${_K_NC}"
+echo -e "\${_K_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${_K_NC}"
+echo ""
+source /opt/ros/${ros_distro}/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file://${KALMAN_DIR}/cyclonedds.xml
+export ROS_DOMAIN_ID=0
+export ROS_IPV6=on
+EOF
 
-    for key in "${!ros_vars[@]}"; do
-        if ! grep -q "${key}" ~/.bashrc 2>/dev/null; then
-            echo "${ros_vars[$key]} # Added by Kalman" >> ~/.bashrc
-        fi
-    done
+    # Agregar una sola línea al .bashrc — se activa solo cuando env.bash existe
+    if ! grep -q "kalman/env.bash" ~/.bashrc 2>/dev/null; then
+        echo "" >> ~/.bashrc
+        echo "# Configuración de sesión para laboratorio Kalman Robotics" >> ~/.bashrc
+        echo "[ -f ${KALMAN_DIR}/env.bash ] && source ${KALMAN_DIR}/env.bash" >> ~/.bashrc
+    fi
 
-    log_ok "Variables ROS2 configuradas en ~/.bashrc"
+    log_ok "Entorno ROS2 configurado. Se activará automáticamente en cada nueva terminal."
 }
 
 # ─────────────────────────────────────────────
@@ -447,22 +469,41 @@ function report_ready() {
 }
 
 # ─────────────────────────────────────────────
-# 14. Instrucciones finales
+# 14. Reiniciar daemon ROS2
+# ─────────────────────────────────────────────
+function restart_ros_daemon() {
+    local ros_distro=${ROS_DISTRO:-humble}
+    local ros_setup="/opt/ros/${ros_distro}/setup.bash"
+
+    if [ ! -f "${ros_setup}" ]; then
+        log_warn "ROS2 setup.bash no encontrado — saltando ros2 daemon stop."
+        return
+    fi
+
+    log_info "Limpiando cache del daemon ROS2..."
+    bash -c "source ${ros_setup} && ros2 daemon stop" 2>/dev/null || true
+    log_ok "Daemon ROS2 detenido. Se reiniciará con la nueva configuración."
+}
+
+# ─────────────────────────────────────────────
+# 15. Instrucciones finales
 # ─────────────────────────────────────────────
 function next_steps() {
     echo
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN} Kalman Robotics - Conexion establecida${NC}"
+    echo -e "${GREEN}  Kalman Robotics - Conexion establecida${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo
     echo -e "  Robot:  ${ROBOT_HOSTNAME}"
     echo -e "  AWS:    ${AWS_HOSTNAME}"
     echo
-    echo -e "  Recarga las variables de entorno:"
-    echo -e "  ${YELLOW}source ~/.bashrc${NC}"
+    echo -e "  Abre una nueva terminal para activar el entorno ROS2."
     echo
     echo -e "  Verifica los topicos del robot:"
     echo -e "  ${YELLOW}ros2 topic list${NC}"
+    echo
+    echo -e "  Al terminar la sesion ejecuta:"
+    echo -e "  ${YELLOW}bash <(curl -sSL https://raw.githubusercontent.com/Kalman-Robotics/utils/master/student-end.sh)${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
@@ -488,6 +529,7 @@ function main() {
     notify_fc94
     configure_cyclonedds
     export_ros_env
+    restart_ros_daemon
     report_ready
     next_steps
 }
